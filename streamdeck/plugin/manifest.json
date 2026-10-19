@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "Name": "T3code Bar",
+  "Version": "1.0.0.0",
+  "Author": "Brahim Hamichan",
+  "Description": "Weekly agent limits from T3 Code on your Stream Deck: all subscriptions, one agent, or one account per key.",
+  "URL": "https://github.com/brahimhamichan/t3code-bar",
+  "Icon": "imgs/plugin",
+  "Category": "T3code Bar",
+  "CategoryIcon": "imgs/category",
+  "CodePath": "bin/plugin.js",
+  "Nodejs": { "Version": "20", "Debug": "disabled" },
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.5" },
+  "OS": [{ "Platform": "mac", "MinimumVersion": "13" }],
+  "Actions": [
+    {
+      "UUID": "io.github.brahimhamichan.t3codebar.limit",
+      "Name": "Agent Limit",
+      "Tooltip": "Weekly limit left for all agents, one agent, or one account. Press to open T3 Code.",
+      "Icon": "imgs/action",
+      "PropertyInspectorPath": "ui/limit.html",
+      "Controllers": ["Keypad"],
+      "States": [{ "Image": "imgs/key", "ShowTitle": false }]
+    }
+  ]
+}

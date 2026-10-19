@@ -1,0 +1,1 @@
+{ "name": "t3codebar-streamdeck", "private": true, "type": "module", "dependencies": { "ws": "^8.18.0" } }

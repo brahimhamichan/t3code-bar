@@ -278,6 +278,23 @@ struct T3Client {
         agents = byDriver.values.sorted { (order.firstIndex(of: $0.id) ?? 99, $0.name) < (order.firstIndex(of: $1.id) ?? 99, $1.name) }
         errors = results.filter { $0.1 == nil }.map { "Can't reach T3 Code on \($0.0)" }
         updated = .now
+        export()
+    }
+
+    /// Shared snapshot for other clients (the Stream Deck plugin reads `limits.json`).
+    private func export() {
+        let iso = ISO8601DateFormatter()
+        let json: [[String: Any]] = agents.map { a in
+            ["id": a.id, "name": a.name, "icon": a.icon, "left": a.headline ?? 0, "accounts": a.accounts.compactMap { acc -> [String: Any]? in
+                let w = acc.limits.windows
+                guard let pick = w.first(where: { $0.kind == "weekly" }) ?? w.first(where: { $0.kind == "monthly" }) ?? w.last else { return nil }
+                var o: [String: Any] = ["name": acc.name, "window": pick.label, "left": Int((100 - pick.usedPercent).rounded())]
+                if let r = pick.resetsAt { o["resetsAt"] = iso.string(from: r) }
+                return o
+            }]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["updatedAt": iso.string(from: .now), "agents": json], options: .prettyPrinted) else { return }
+        try? data.write(to: configDir.appending(path: "limits.json"), options: .atomic)
     }
 }
 

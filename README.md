@@ -68,3 +68,13 @@ Everything is in `App.swift` (SwiftUI + Swift Charts), built by `build.sh` witho
 ## License
 
 [MIT](LICENSE). See [NOTICE](NOTICE.md) for icon attributions and trademarks. Not affiliated with T3 Tools Inc.
+
+## Stream Deck plugin
+
+`streamdeck/plugin` adds an **Agent Limit** key that shows weekly limit left for all agents, one agent, or one account (pick it in the key's settings). Press a key to open T3 Code. It reads `~/.config/t3code-bar/limits.json`, which the menubar app writes on every refresh, so the app must be running.
+
+```sh
+cd streamdeck/plugin && npm install
+cp -R . ~/Library/Application\ Support/com.elgato.StreamDeck/Plugins/io.github.brahimhamichan.t3codebar.sdPlugin
+# then restart Stream Deck
+```
