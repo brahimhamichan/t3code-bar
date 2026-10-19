@@ -258,8 +258,8 @@ struct T3Client {
         // The same account can be signed in on several devices: keep the freshest reading per (driver, name).
         var accounts: [String: (driver: String, account: Account)] = [:]
         func add(_ driver: String, _ name: String, _ limits: Limits) {
-            // Drop per-model windows like "Weekly · Fable".
-            let windows = limits.windows.filter { !$0.label.contains("·") }
+            // Drop session windows and per-model windows like "Weekly · Fable".
+            let windows = limits.windows.filter { !$0.label.contains("·") && !$0.label.localizedCaseInsensitiveContains("session") }
             guard !windows.isEmpty else { return }
             let key = "\(driver)/\(name)"
             if let old = accounts[key], old.account.limits.checkedAt >= limits.checkedAt { return }
