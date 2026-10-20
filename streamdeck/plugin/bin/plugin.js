@@ -24,9 +24,12 @@ const marks = Object.fromEntries(["claude", "openai", "grok"].map((n) => {
   return [n, { viewBox: svg.match(/viewBox="([^"]+)"/)[1], body: svg.replace(/^<svg[^>]*>|<\/svg>\s*$/g, "") }];
 }));
 const tints = { claude: "#D97757", openai: "#E5E5E5", grok: "#E5E5E5" };
+// Stream Deck's SVG renderer ignores nested <svg>, so place marks with a transformed <g>.
 const mark = (name, x, y, size) => {
   const m = marks[name];
-  return m ? `<svg x="${x}" y="${y}" width="${size}" height="${size}" viewBox="${m.viewBox}" fill="${tints[name]}">${m.body}</svg>` : "";
+  if (!m) return "";
+  const [, , w, h] = m.viewBox.split(/[\s,]+/).map(Number), k = size / Math.max(w, h);
+  return `<g transform="translate(${x + (size - w * k) / 2} ${y + (size - h * k) / 2}) scale(${k})" fill="${tints[name]}">${m.body}</g>`;
 };
 
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
