@@ -176,16 +176,16 @@ struct T3Client {
     /// `subscribeServerConfig` snapshot (+ usage-limit sources), then disconnects.
     /// Closing the socket is the only way to unblock a pending `receive()`, so deadlines cancel it.
     func serverConfig() async throws -> Snapshot {
-        let (ws, session) = try await connect(); defer { ws.cancel(); session.invalidateAndCancel() }
+        let (ws, session) = try await connect(); defer { ws.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
         try await send(ws, "subscribeServerConfig", ["usageLimitSources": true])
-        Task { try await Task.sleep(for: .seconds(15)); ws.cancel() }
+        Task { try await Task.sleep(for: .seconds(15)); ws.cancel(with: .normalClosure, reason: nil) }
         var providers: Any?, sources: Any = [Any]()
         while let m = try? await next(ws) {
             if m["_tag"] as? String == "Ping" { try? await ws.send(.string(#"{"_tag":"Pong"}"#)) }
             for v in m["values"] as? [[String: Any]] ?? [] {
                 if v["type"] as? String == "snapshot" {
                     providers = (v["config"] as? [String: Any])?["providers"]
-                    Task { try await Task.sleep(for: .seconds(2.5)); ws.cancel() }  // give sources a moment to arrive
+                    Task { try await Task.sleep(for: .seconds(2.5)); ws.cancel(with: .normalClosure, reason: nil) }  // give sources a moment to arrive
                 }
                 if v["type"] as? String == "usageLimitSourcesUpdated" { sources = (v["payload"] as? [String: Any])?["sources"] ?? [] }
             }
@@ -197,9 +197,9 @@ struct T3Client {
 
     /// `server.getUsageSummary` buckets for a day range.
     func usage(since: String, until: String) async throws -> UsageResult {
-        let (ws, session) = try await connect(); defer { ws.cancel(); session.invalidateAndCancel() }
+        let (ws, session) = try await connect(); defer { ws.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
         try await send(ws, "server.getUsageSummary", ["sinceDay": since, "untilDay": until, "timeZone": TimeZone.current.identifier])
-        Task { try await Task.sleep(for: .seconds(60)); ws.cancel() }
+        Task { try await Task.sleep(for: .seconds(60)); ws.cancel(with: .normalClosure, reason: nil) }
         while true {
             let m = try await next(ws)
             guard m["_tag"] as? String == "Exit", let exit = m["exit"] as? [String: Any], let value = exit["value"] else { continue }
@@ -587,7 +587,7 @@ func menubarImage(_ agents: [Agent]) -> NSImage {
 
 @main struct T3codeBar: App {
     @StateObject private var store = Store()
-    private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    private let timer = Timer.publish(every: 300, on: .main, in: .common)  // 5 min: fewer wakeups, and each refresh leaks a little CFNetwork state.autoconnect()
 
     init() {
         // `--snapshot <dir>` writes popover.png + menubar.png and exits (for screenshots).
@@ -608,7 +608,7 @@ func menubarImage(_ agents: [Agent]) -> NSImage {
 
     var body: some Scene {
         MenuBarExtra {
-            Popover(store: store)
+            Popover(store: store).onAppear { store.refresh() }  // fresh numbers whenever it opens
         } label: {
             Image(nsImage: menubarImage(store.agents.filter { !store.hidden.contains($0.id) }))
                 .onAppear { store.refresh() }.onReceive(timer) { _ in store.refresh() }
