@@ -146,19 +146,21 @@ struct T3Client {
     init(_ d: Device) { device = d }
 
     /// Opens an authenticated /ws socket: bearer token → one-time wsTicket.
-    private func connect() async throws -> URLSessionWebSocketTask {
+    /// Each call gets its own session, invalidated by the caller: sockets on `URLSession.shared` are never released (~2 GB after 11 days).
+    private func connect() async throws -> (URLSessionWebSocketTask, URLSession) {
         let port = try await Tunnels.shared.port(for: device)
+        let session = URLSession(configuration: .ephemeral)
         let token = try String(contentsOf: configDir.appending(path: "\(device.id).token"), encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/auth/websocket-ticket")!)
         req.httpMethod = "POST"; req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let ticket = try JSONDecoder().decode([String: String].self, from: try await URLSession.shared.data(for: req).0)["ticket"] ?? ""
+        let ticket = try JSONDecoder().decode([String: String].self, from: try await session.data(for: req).0)["ticket"] ?? ""
         var c = URLComponents(string: "ws://127.0.0.1:\(port)/ws")!
         c.queryItems = [.init(name: "orchestrationProtocol", value: "2"), .init(name: "wsTicket", value: ticket)]
-        let ws = URLSession.shared.webSocketTask(with: c.url!)
+        let ws = session.webSocketTask(with: c.url!)
         ws.maximumMessageSize = 64 << 20
         ws.resume()
-        return ws
+        return (ws, session)
     }
 
     private func send(_ ws: URLSessionWebSocketTask, _ tag: String, _ payload: [String: Any]) async throws {
@@ -174,7 +176,7 @@ struct T3Client {
     /// `subscribeServerConfig` snapshot (+ usage-limit sources), then disconnects.
     /// Closing the socket is the only way to unblock a pending `receive()`, so deadlines cancel it.
     func serverConfig() async throws -> Snapshot {
-        let ws = try await connect(); defer { ws.cancel() }
+        let (ws, session) = try await connect(); defer { ws.cancel(); session.invalidateAndCancel() }
         try await send(ws, "subscribeServerConfig", ["usageLimitSources": true])
         Task { try await Task.sleep(for: .seconds(15)); ws.cancel() }
         var providers: Any?, sources: Any = [Any]()
@@ -195,7 +197,7 @@ struct T3Client {
 
     /// `server.getUsageSummary` buckets for a day range.
     func usage(since: String, until: String) async throws -> UsageResult {
-        let ws = try await connect(); defer { ws.cancel() }
+        let (ws, session) = try await connect(); defer { ws.cancel(); session.invalidateAndCancel() }
         try await send(ws, "server.getUsageSummary", ["sinceDay": since, "untilDay": until, "timeZone": TimeZone.current.identifier])
         Task { try await Task.sleep(for: .seconds(60)); ws.cancel() }
         while true {
