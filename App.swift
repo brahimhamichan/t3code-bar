@@ -141,15 +141,31 @@ actor Tunnels {
     }
 }
 
-struct T3Client {
-    let device: Device
+/// One long-lived /ws socket per device, shared by every request (Effect RPC routes replies by `requestId`).
+/// A fresh URLSession per refresh leaked ~2 CFNetwork sessions each time, even after invalidation, so we keep one.
+actor Connection {
+    private static var all: [String: Connection] = [:]
+    static func get(_ d: Device) async -> Connection { await MainActor.run { all[d.id] ?? { let c = Connection(d); all[d.id] = c; return c }() } }
+
+    private let device: Device
+    private let session = URLSession(configuration: .ephemeral)
+    private var ws: URLSessionWebSocketTask?
+    private var streams: [String: AsyncStream<[String: Any]>.Continuation] = [:]
+    private var nextId = 0
+    private var opening: Task<URLSessionWebSocketTask, Error>?
     init(_ d: Device) { device = d }
 
-    /// Opens an authenticated /ws socket: bearer token → one-time wsTicket.
-    /// Each call gets its own session, invalidated by the caller: sockets on `URLSession.shared` are never released (~2 GB after 11 days).
-    private func connect() async throws -> (URLSessionWebSocketTask, URLSession) {
+    /// Opens (or reuses) the authenticated socket: bearer token → one-time wsTicket.
+    private func socket() async throws -> URLSessionWebSocketTask {
+        if let ws, ws.closeCode == .invalid { return ws }
+        if let opening { return try await opening.value }  // actor reentrancy: share one in-flight connect
+        let t = Task { try await open() }
+        opening = t; defer { opening = nil }
+        return try await t.value
+    }
+
+    private func open() async throws -> URLSessionWebSocketTask {
         let port = try await Tunnels.shared.port(for: device)
-        let session = URLSession(configuration: .ephemeral)
         let token = try String(contentsOf: configDir.appending(path: "\(device.id).token"), encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/auth/websocket-ticket")!)
@@ -160,51 +176,78 @@ struct T3Client {
         let ws = session.webSocketTask(with: c.url!)
         ws.maximumMessageSize = 64 << 20
         ws.resume()
-        return (ws, session)
+        self.ws = ws
+        Task { await read(ws) }
+        return ws
     }
 
-    private func send(_ ws: URLSessionWebSocketTask, _ tag: String, _ payload: [String: Any]) async throws {
-        let msg: [String: Any] = ["_tag": "Request", "id": "1", "tag": tag, "payload": payload, "headers": []]
+    /// Routes each message to its request's stream; on socket failure ends all streams so callers reconnect next time.
+    private func read(_ ws: URLSessionWebSocketTask) async {
+        while case .string(let text)? = try? await ws.receive() {
+            guard let m = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else { continue }
+            if m["_tag"] as? String == "Ping" { try? await ws.send(.string(#"{"_tag":"Pong"}"#)); continue }
+            guard let id = m["requestId"] as? String, let s = streams[id] else { continue }
+            s.yield(m)
+            if m["_tag"] as? String == "Exit" { s.finish(); streams[id] = nil }
+        }
+        ws.cancel(with: .goingAway, reason: nil)
+        if self.ws === ws { self.ws = nil; streams.values.forEach { $0.finish() }; streams = [:] }
+    }
+
+    /// Sends a request and returns its reply stream, ended after `timeout` (the server is interrupted then too).
+    func request(_ tag: String, _ payload: [String: Any], timeout: Duration) async throws -> (String, AsyncStream<[String: Any]>) {
+        let ws = try await socket()
+        nextId += 1; let id = String(nextId)
+        let (stream, cont) = AsyncStream<[String: Any]>.makeStream()
+        streams[id] = cont
+        let msg: [String: Any] = ["_tag": "Request", "id": id, "tag": tag, "payload": payload, "headers": []]
         try await ws.send(.string(String(decoding: try JSONSerialization.data(withJSONObject: msg), as: UTF8.self)))
+        Task { try? await Task.sleep(for: timeout); await end(id) }
+        return (id, stream)
     }
 
-    private func next(_ ws: URLSessionWebSocketTask) async throws -> [String: Any] {
-        guard case .string(let text) = try await ws.receive() else { return [:] }
-        return (try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]) ?? [:]
+    /// Stops a request: tells the server to interrupt it and ends its stream.
+    func end(_ id: String) async {
+        guard let s = streams.removeValue(forKey: id) else { return }
+        s.finish()
+        try? await ws?.send(.string(#"{"_tag":"Interrupt","requestId":"\#(id)"}"#))
     }
+}
 
-    /// `subscribeServerConfig` snapshot (+ usage-limit sources), then disconnects.
-    /// Closing the socket is the only way to unblock a pending `receive()`, so deadlines cancel it.
+struct T3Client {
+    let device: Device
+    init(_ d: Device) { device = d }
+
+    /// `subscribeServerConfig` snapshot (+ usage-limit sources), then interrupts the subscription.
     func serverConfig() async throws -> Snapshot {
-        let (ws, session) = try await connect(); defer { ws.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
-        try await send(ws, "subscribeServerConfig", ["usageLimitSources": true])
-        Task { try await Task.sleep(for: .seconds(15)); ws.cancel(with: .normalClosure, reason: nil) }
+        let conn = await Connection.get(device)
+        let (id, stream) = try await conn.request("subscribeServerConfig", ["usageLimitSources": true], timeout: .seconds(15))
         var providers: Any?, sources: Any = [Any]()
-        while let m = try? await next(ws) {
-            if m["_tag"] as? String == "Ping" { try? await ws.send(.string(#"{"_tag":"Pong"}"#)) }
+        for await m in stream {
             for v in m["values"] as? [[String: Any]] ?? [] {
                 if v["type"] as? String == "snapshot" {
                     providers = (v["config"] as? [String: Any])?["providers"]
-                    Task { try await Task.sleep(for: .seconds(2.5)); ws.cancel(with: .normalClosure, reason: nil) }  // give sources a moment to arrive
+                    Task { try? await Task.sleep(for: .seconds(2.5)); await conn.end(id) }  // give sources a moment to arrive
                 }
                 if v["type"] as? String == "usageLimitSourcesUpdated" { sources = (v["payload"] as? [String: Any])?["sources"] ?? [] }
             }
             if providers != nil, (sources as? [Any])?.isEmpty == false { break }
         }
+        await conn.end(id)
         guard let providers else { throw URLError(.timedOut) }
         return try decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: ["providers": providers, "sources": sources]))
     }
 
     /// `server.getUsageSummary` buckets for a day range.
     func usage(since: String, until: String) async throws -> UsageResult {
-        let (ws, session) = try await connect(); defer { ws.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
-        try await send(ws, "server.getUsageSummary", ["sinceDay": since, "untilDay": until, "timeZone": TimeZone.current.identifier])
-        Task { try await Task.sleep(for: .seconds(60)); ws.cancel(with: .normalClosure, reason: nil) }
-        while true {
-            let m = try await next(ws)
+        let conn = await Connection.get(device)
+        let (id, stream) = try await conn.request("server.getUsageSummary", ["sinceDay": since, "untilDay": until, "timeZone": TimeZone.current.identifier], timeout: .seconds(60))
+        defer { Task { await conn.end(id) } }
+        for await m in stream {
             guard m["_tag"] as? String == "Exit", let exit = m["exit"] as? [String: Any], let value = exit["value"] else { continue }
             return try decoder.decode(UsageResult.self, from: JSONSerialization.data(withJSONObject: value))
         }
+        throw URLError(.timedOut)
     }
 }
 
