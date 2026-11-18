@@ -23,10 +23,14 @@ T3code Bar keeps no data of its own. It connects to your running T3 Code server(
 
 ## Requirements
 
-- macOS 14+ and the Swift toolchain (Xcode or Command Line Tools)
+- macOS 14+
 - T3 Code running locally (desktop app or `t3 serve`), plus any remote machines you want to include
 
 ## Install
+
+Download [T3codeBar.dmg](https://github.com/brahimhamichan/t3code-bar/releases/latest/download/T3codeBar.dmg), open it, and drag T3code Bar to Applications. Then follow [Configure](#configure).
+
+To build from source with Xcode or the Command Line Tools:
 
 ```sh
 git clone https://github.com/brahimhamichan/t3code-bar
